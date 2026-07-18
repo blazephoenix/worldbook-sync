@@ -1,6 +1,6 @@
 {
   "name": "worldbook-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SillyTavern extension that detects a character's franchise and maintains a shared universe worldbook.",
   "private": true,
   "license": "MIT",

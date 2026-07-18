@@ -82,12 +82,30 @@ Use these terms exactly; don't drift to synonyms.
 Each character carries its own auxiliary universe book, so a group chat spanning two franchises simply
 merges both books via ST's normal order-sorted World Info. No special crossover machinery.
 
+## Story-aware lore (per-chat)
+
+Alongside the chat-blind canon path, a separate on-demand action — **"Update this chat's story
+lore"** — captures how *your playthrough* has diverged from canon, into a **per-chat book** (ST Chat
+Lore scope, bound via `chatMetadata['world_info']`). See [ADR-0008](./docs/adr/0008-story-aware-lore.md).
+
+- **Canon vs story = two books, two actions, two modes.** Canon uses chat-blind **`generateRaw`**
+  (detection + build/regenerate) and writes the shared universe book. Story uses **`generateQuietPrompt`**
+  (which sees the chat) and writes the per-chat book. They never share a book or a code path.
+- **Captures** durable world-state changes/events + the player character's standing; keyword-triggered
+  concise prose, same entry policy as canon.
+- **Precedence for free:** Chat Lore inserts ahead of character/global lore, so a story entry overrides
+  canon on the same keyword.
+- **Safe by reuse:** same ownership + edit-preservation + backup; an empty result is a **no-op** (never
+  wipes an unchanged story book).
+
 ## Out of scope / deferred
 
 - **Original (non-franchise) settings** — v1 is franchises-only; originals get a "none" verdict and no book.
 - **Personas** — never touched, by design.
 - **Personal-book authoring** — the plugin never writes a character's own lore.
 - **Recursion / interlinked entries** — deferred to v2 (cascade risk, hard to auto-generate correctly).
+- **Living / auto-evolving story lore** — deferred; the story path is one-shot on demand, not a
+  background watcher ([ADR-0008](./docs/adr/0008-story-aware-lore.md)).
 - **Vector/embedding activation** — rejected; the docs advise keyword matching for predictable results.
 
 ## Implementation notes (resolved during the build)

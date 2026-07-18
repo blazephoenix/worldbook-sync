@@ -3,7 +3,15 @@ import { universeBookName } from './books';
 import { detectFranchise } from './detection';
 import { loadSettings, persistSettings, type Settings } from './settings';
 import { confirmVerdict, renderSettingsPanel, type ConfirmResult, type PanelHandlers } from './ui';
-import { buildBook, ensureBook, linkAuxBook, regenerateBook, restoreBackup } from './worldbook';
+import {
+  buildBook,
+  ensureBook,
+  ensureChatBook,
+  linkAuxBook,
+  regenerateBook,
+  restoreBackup,
+  updateStoryLore,
+} from './worldbook';
 import type { Verdict } from './types';
 
 const LOG = '[worldbook-sync]';
@@ -198,6 +206,29 @@ function buildHandlers(settings: Settings): PanelHandlers {
           const n = await buildBook(ctx, settings, bookName, verdict.display, settings.bookDepth);
           toastr.success(`Added ${n} entries to "${bookName}".`, 'Worldbook Sync');
         }
+      });
+    },
+    onUpdateStoryLore: () => {
+      const active = requireCharacter();
+      if (!active) return;
+      const { ctx, character } = active;
+      void runAction('Update story lore', async () => {
+        const chatBookName = await ensureChatBook(ctx);
+        if (!chatBookName) {
+          toastr.warning('Open a chat first.', 'Worldbook Sync');
+          return;
+        }
+        // Story lore works regardless of franchise; use the franchise label if we have one.
+        const cached = settings.verdicts[character.avatar]?.verdict;
+        const label = cached && cached.kind === 'franchise' ? cached.display : character.name;
+        toastr.info("Reading the story and updating this chat's lore…", 'Worldbook Sync');
+        const n = await updateStoryLore(ctx, settings, chatBookName, label, settings.bookDepth);
+        toastr[n > 0 ? 'success' : 'info'](
+          n > 0
+            ? `Wrote ${n} story entries to "${chatBookName}".`
+            : 'No new developments to record yet.',
+          'Worldbook Sync',
+        );
       });
     },
     onRestore: () => {

@@ -44,9 +44,20 @@ Open the **Worldbook Sync** panel in the Extensions settings drawer:
   linked but stays empty until you click Build (so no LLM generation fires unless you ask).
 - **Book depth** — target entry count for a build (default 12).
 - **Re-detect franchise** — re-run detection + confirm for the open character.
-- **Build / regenerate book** — build the open character's universe book, or regenerate it
-  (preserving your edits) if it already has content.
-- **Restore last backup** — roll back the last rewrite of the open character's book.
+- **Build / regenerate canon book** — build the open character's shared universe book (chat-blind
+  franchise canon), or regenerate it (preserving your edits) if it already has content.
+- **Update this chat's story lore** — read your current playthrough and capture how it has diverged
+  from canon (world-state changes, events, your character's standing) into a **per-chat** book bound
+  to this conversation only. The shared canon book is untouched. An empty result is a no-op.
+- **Restore last backup** — roll back the last rewrite of the relevant book.
+
+### Two books, on purpose
+
+- **Canon book** — shared across every character in a franchise, generated **chat-blind**
+  (`generateRaw`), so your roleplay never leaks into or biases the shared canon.
+- **Story book** — bound to a single chat, generated **with** your story in view
+  (`generateQuietPrompt`). It layers on top of canon (SillyTavern inserts chat lore ahead of
+  character lore), so your playthrough's developments override canon in that conversation only.
 
 ## How it works
 

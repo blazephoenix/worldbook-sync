@@ -78,7 +78,7 @@ async function detectFranchise(ctx, character) {
   const maxAttempts = 2;
   let lastError;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const raw = await ctx.generateQuietPrompt(prompt, false, true);
+    const raw = await ctx.generateRaw({ prompt });
     try {
       return parseDetectionResponse(raw);
     } catch (error) {
@@ -223,11 +223,13 @@ function renderSettingsPanel(state, handlers) {
         <input type="number" id="wbs-depth" min="4" max="40" step="1" /></label>
       <div class="wbs-actions">
         <button class="wbs-btn" id="wbs-redetect">Re-detect franchise</button>
-        <button class="wbs-btn primary" id="wbs-build">Build / regenerate book</button>
+        <button class="wbs-btn primary" id="wbs-build">Build / regenerate canon book</button>
+        <button class="wbs-btn" id="wbs-story">Update this chat's story lore</button>
         <button class="wbs-btn ghost" id="wbs-restore">Restore last backup</button>
       </div>
       <p style="opacity:0.7;margin-top:10px;font-size:0.85em;">
-        Acts on the currently open character. Uses your active LLM connection.</p>
+        Canon book = chat-blind franchise lore, shared across characters. Story lore = this chat
+        only, derived from your playthrough. Both use your active LLM connection.</p>
     </div>`;
   container.appendChild(drawer);
   const enabled = drawer.querySelector("#wbs-enabled");
@@ -244,6 +246,7 @@ function renderSettingsPanel(state, handlers) {
   });
   drawer.querySelector("#wbs-redetect").addEventListener("click", () => handlers.onRedetect());
   drawer.querySelector("#wbs-build").addEventListener("click", () => handlers.onBuildOrRegenerate());
+  drawer.querySelector("#wbs-story").addEventListener("click", () => handlers.onUpdateStoryLore());
   drawer.querySelector("#wbs-restore").addEventListener("click", () => handlers.onRestore());
   drawer.querySelector(".inline-drawer-toggle").addEventListener("click", () => {
     drawer.querySelector(".inline-drawer-content").classList.toggle("open");
@@ -314,23 +317,66 @@ function buildGenerationPrompt(franchiseDisplay, targetCount) {
     '[{"title": "...", "keys": ["...", "..."], "content": "..."}]'
   ].join("\n");
 }
+function buildStoryPrompt(franchiseDisplay, softCap) {
+  return [
+    `Based on the ROLEPLAY CONVERSATION SO FAR (which you can see above), capture how this`,
+    `playthrough of the "${franchiseDisplay}" universe has diverged from its canon.`,
+    "",
+    "Record two kinds of things:",
+    "- World-state changes & events: durable things that happened \u2014 places/factions/people whose",
+    "  status shifted, things destroyed or created, alliances or conflicts the player caused.",
+    "- The player character's standing: how NPCs, factions, and the world now regard them \u2014",
+    "  reputation, bonds, and grudges earned in play.",
+    "",
+    "Rules:",
+    "- Only durable developments, not passing scene detail or dialogue.",
+    "- Do NOT restate established franchise canon \u2014 only what THIS story changed or established.",
+    "- If nothing notable has happened yet, return an empty array [].",
+    `- Keep it focused: up to about ${softCap} entries.`,
+    "",
+    "For each entry:",
+    '- "title": a short human label.',
+    '- "keys": trigger keywords (proper nouns, synonyms, plurals) people would actually type.',
+    '- "content": 1\u20133 concise sentences of prose.',
+    "",
+    "Respond with ONLY a JSON array \u2014 no prose, no code fence:",
+    '[{"title": "...", "keys": ["...", "..."], "content": "..."}]'
+  ].join("\n");
+}
 async function generateUniverseEntries(ctx, franchiseDisplay, targetCount) {
-  const prompt = buildGenerationPrompt(franchiseDisplay, targetCount);
+  return runGeneration(
+    () => ctx.generateRaw({ prompt: buildGenerationPrompt(franchiseDisplay, targetCount), responseLength: 2048 }),
+    "generateUniverseEntries",
+    true
+  );
+}
+async function generateStoryEntries(ctx, franchiseDisplay, softCap) {
+  return runGeneration(
+    () => ctx.generateQuietPrompt({ quietPrompt: buildStoryPrompt(franchiseDisplay, softCap), skipWIAN: true, responseLength: 2048 }),
+    "generateStoryEntries",
+    false
+  );
+}
+async function runGeneration(call, label, requireNonEmpty) {
   const maxAttempts = 2;
   let lastError;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const raw = await ctx.generateQuietPrompt(prompt, false, true, void 0, void 0, 2048);
+    let raw;
+    try {
+      raw = await call();
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
     try {
       const entries = parseGenerationResponse(raw);
-      if (entries.length > 0) return entries;
+      if (entries.length > 0 || !requireNonEmpty) return entries;
       lastError = new Error("generation returned an empty entry list");
     } catch (error) {
       lastError = error;
     }
   }
-  throw new Error(
-    `generateUniverseEntries: no usable entries after ${maxAttempts} attempts (${String(lastError)})`
-  );
+  throw new Error(`${label}: no usable result after ${maxAttempts} attempts (${String(lastError)})`);
 }
 
 // src/host.ts
@@ -390,6 +436,7 @@ function planRegeneration(ownedHashes, currentEntries) {
 }
 
 // src/worldbook.ts
+var CHAT_BOOK_METADATA_KEY = "world_info";
 function entryFieldsFor(gen) {
   return {
     key: [...gen.keys],
@@ -405,7 +452,6 @@ function entryFieldsFor(gen) {
     position: 0,
     probability: 100,
     useProbability: false,
-    // Also scan the character's own card text (ADR-0005) so entries can fire from it.
     matchCharacterDescription: true,
     matchCharacterPersonality: true,
     matchScenario: true
@@ -430,27 +476,21 @@ async function linkAuxBook(ctx, characterAvatar, bookName) {
   await linkAux(characterAvatar, bookName);
   return true;
 }
-async function backupBook(ctx, settings, bookName) {
-  const data = await ctx.loadWorldInfo(bookName);
-  if (!data) return;
-  settings.backups[bookName] = { data: structuredClone(data), at: Date.now() };
-}
-async function appendEntries(ctx, settings, bookName, data, gen) {
-  const createEntry = await getCreateEntry(ctx);
-  if (!createEntry) {
-    throw new Error("createWorldInfoEntry is unavailable (world-info.js import failed)");
+async function ensureChatBook(ctx) {
+  const chatId = ctx.getCurrentChatId?.() ?? ctx.chatId;
+  if (!chatId) return null;
+  const names = ctx.getWorldInfoNames?.() ?? [];
+  const bound = ctx.chatMetadata?.[CHAT_BOOK_METADATA_KEY];
+  if (typeof bound === "string" && bound && names.includes(bound)) return bound;
+  const safeId = String(chatId).replace(/[^a-z0-9 -]/gi, "_").replace(/_{2,}/g, "_").slice(0, 48);
+  const name = `Story Lore - ${safeId}`;
+  if (!names.includes(name)) {
+    await ctx.saveWorldInfo(name, { entries: {} }, true);
+    await ctx.updateWorldInfoList();
   }
-  const owned = settings.ownership[bookName] ?? (settings.ownership[bookName] = {});
-  let added = 0;
-  for (const g of gen) {
-    const entry = createEntry(bookName, data);
-    if (!entry) continue;
-    Object.assign(entry, entryFieldsFor(g));
-    entry.addMemo = true;
-    owned[String(entry.uid)] = hashContent(g.content);
-    added++;
-  }
-  return added;
+  ctx.chatMetadata[CHAT_BOOK_METADATA_KEY] = name;
+  await ctx.saveMetadata();
+  return name;
 }
 function contentMap(entries) {
   const out = {};
@@ -459,41 +499,44 @@ function contentMap(entries) {
   }
   return out;
 }
-async function buildBook(ctx, settings, bookName, franchiseDisplay, depth) {
-  const gen = await generateUniverseEntries(ctx, franchiseDisplay, depth);
-  await backupBook(ctx, settings, bookName);
-  const data = await ctx.loadWorldInfo(bookName) ?? { entries: {} };
-  const added = await appendEntries(ctx, settings, bookName, data, gen);
-  await ctx.saveWorldInfo(bookName, data);
-  ctx.reloadWorldInfoEditor?.(bookName);
-  persistSettings(ctx);
-  return added;
-}
-async function regenerateBook(ctx, settings, bookName, franchiseDisplay, depth) {
+async function applyGeneratedEntries(ctx, settings, bookName, gen) {
   const createEntry = await getCreateEntry(ctx);
   if (!createEntry) {
     throw new Error("createWorldInfoEntry is unavailable (world-info.js import failed)");
   }
-  const data = await ctx.loadWorldInfo(bookName);
-  if (!data) throw new Error(`Universe book not found: ${bookName}`);
-  await backupBook(ctx, settings, bookName);
+  const data = await ctx.loadWorldInfo(bookName) ?? { entries: {} };
+  settings.backups[bookName] = { data: structuredClone(data), at: Date.now() };
   const owned = settings.ownership[bookName] ?? {};
   const plan = planRegeneration(owned, contentMap(data.entries));
   for (const uid of plan.removableUids) delete data.entries[uid];
-  const gen = await generateUniverseEntries(ctx, franchiseDisplay, depth);
   const nextOwned = {};
+  let added = 0;
   for (const g of gen) {
     const entry = createEntry(bookName, data);
     if (!entry) continue;
     Object.assign(entry, entryFieldsFor(g));
     entry.addMemo = true;
     nextOwned[String(entry.uid)] = hashContent(g.content);
+    added++;
   }
   settings.ownership[bookName] = nextOwned;
   await ctx.saveWorldInfo(bookName, data);
   ctx.reloadWorldInfoEditor?.(bookName);
   persistSettings(ctx);
-  return gen.length;
+  return added;
+}
+async function buildBook(ctx, settings, bookName, franchiseDisplay, depth) {
+  const gen = await generateUniverseEntries(ctx, franchiseDisplay, depth);
+  return applyGeneratedEntries(ctx, settings, bookName, gen);
+}
+async function regenerateBook(ctx, settings, bookName, franchiseDisplay, depth) {
+  const gen = await generateUniverseEntries(ctx, franchiseDisplay, depth);
+  return applyGeneratedEntries(ctx, settings, bookName, gen);
+}
+async function updateStoryLore(ctx, settings, chatBookName, franchiseDisplay, softCap) {
+  const gen = await generateStoryEntries(ctx, franchiseDisplay, softCap);
+  if (gen.length === 0) return 0;
+  return applyGeneratedEntries(ctx, settings, chatBookName, gen);
 }
 async function restoreBackup(ctx, settings, bookName) {
   const backup = settings.backups[bookName];
@@ -657,6 +700,26 @@ function buildHandlers(settings) {
           const n = await buildBook(ctx, settings, bookName, verdict.display, settings.bookDepth);
           toastr.success(`Added ${n} entries to "${bookName}".`, "Worldbook Sync");
         }
+      });
+    },
+    onUpdateStoryLore: () => {
+      const active = requireCharacter();
+      if (!active) return;
+      const { ctx, character } = active;
+      void runAction("Update story lore", async () => {
+        const chatBookName = await ensureChatBook(ctx);
+        if (!chatBookName) {
+          toastr.warning("Open a chat first.", "Worldbook Sync");
+          return;
+        }
+        const cached = settings.verdicts[character.avatar]?.verdict;
+        const label = cached && cached.kind === "franchise" ? cached.display : character.name;
+        toastr.info("Reading the story and updating this chat's lore\u2026", "Worldbook Sync");
+        const n = await updateStoryLore(ctx, settings, chatBookName, label, settings.bookDepth);
+        toastr[n > 0 ? "success" : "info"](
+          n > 0 ? `Wrote ${n} story entries to "${chatBookName}".` : "No new developments to record yet.",
+          "Worldbook Sync"
+        );
       });
     },
     onRestore: () => {

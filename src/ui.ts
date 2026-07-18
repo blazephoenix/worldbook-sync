@@ -106,6 +106,7 @@ export interface PanelHandlers {
   onDepthChange(value: number): void;
   onRedetect(): void;
   onBuildOrRegenerate(): void;
+  onUpdateStoryLore(): void;
   onRestore(): void;
 }
 
@@ -136,11 +137,13 @@ export function renderSettingsPanel(state: PanelState, handlers: PanelHandlers):
         <input type="number" id="wbs-depth" min="4" max="40" step="1" /></label>
       <div class="wbs-actions">
         <button class="wbs-btn" id="wbs-redetect">Re-detect franchise</button>
-        <button class="wbs-btn primary" id="wbs-build">Build / regenerate book</button>
+        <button class="wbs-btn primary" id="wbs-build">Build / regenerate canon book</button>
+        <button class="wbs-btn" id="wbs-story">Update this chat's story lore</button>
         <button class="wbs-btn ghost" id="wbs-restore">Restore last backup</button>
       </div>
       <p style="opacity:0.7;margin-top:10px;font-size:0.85em;">
-        Acts on the currently open character. Uses your active LLM connection.</p>
+        Canon book = chat-blind franchise lore, shared across characters. Story lore = this chat
+        only, derived from your playthrough. Both use your active LLM connection.</p>
     </div>`;
   container.appendChild(drawer);
 
@@ -159,6 +162,7 @@ export function renderSettingsPanel(state: PanelState, handlers: PanelHandlers):
   });
   drawer.querySelector('#wbs-redetect')!.addEventListener('click', () => handlers.onRedetect());
   drawer.querySelector('#wbs-build')!.addEventListener('click', () => handlers.onBuildOrRegenerate());
+  drawer.querySelector('#wbs-story')!.addEventListener('click', () => handlers.onUpdateStoryLore());
   drawer.querySelector('#wbs-restore')!.addEventListener('click', () => handlers.onRestore());
 
   // ST's inline-drawer expand/collapse.

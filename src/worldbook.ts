@@ -1,8 +1,11 @@
 import type { GeneratedEntry } from './generation';
-import { generateUniverseEntries } from './generation';
+import { generateStoryEntries, generateUniverseEntries } from './generation';
 import { getCreateEntry, getLinkAux } from './host';
 import { hashContent, planRegeneration } from './ownership';
 import { persistSettings, type Settings } from './settings';
+
+/** chat_metadata key holding a chat's bound world name (world-info.js: METADATA_KEY). */
+const CHAT_BOOK_METADATA_KEY = 'world_info';
 
 /**
  * The World Info field policy for a plugin-authored entry (ADR-0005):
@@ -28,7 +31,6 @@ export function entryFieldsFor(gen: GeneratedEntry): Partial<STWorldInfoEntry> {
     position: 0,
     probability: 100,
     useProbability: false,
-    // Also scan the character's own card text (ADR-0005) so entries can fire from it.
     matchCharacterDescription: true,
     matchCharacterPersonality: true,
     matchScenario: true,
@@ -63,40 +65,28 @@ export async function linkAuxBook(
   return true;
 }
 
-/** Snapshot a book into settings before a rewrite, for recovery (ADR-0004). */
-async function backupBook(
-  ctx: SillyTavernContext,
-  settings: Settings,
-  bookName: string,
-): Promise<void> {
-  const data = await ctx.loadWorldInfo(bookName);
-  if (!data) return;
-  settings.backups[bookName] = { data: structuredClone(data), at: Date.now() };
-}
+/**
+ * Get-or-create the current chat's bound Chat Lore book and return its name, or null if
+ * no chat is open. Binds via chatMetadata['world_info'] + saveMetadata (mirrors ST's
+ * /getchatbook), so the book applies only to this conversation.
+ */
+export async function ensureChatBook(ctx: SillyTavernContext): Promise<string | null> {
+  const chatId = ctx.getCurrentChatId?.() ?? ctx.chatId;
+  if (!chatId) return null;
 
-/** Create WI entries from generated lore, recording ownership hashes. Returns entries added. */
-async function appendEntries(
-  ctx: SillyTavernContext,
-  settings: Settings,
-  bookName: string,
-  data: STWorldInfoData,
-  gen: GeneratedEntry[],
-): Promise<number> {
-  const createEntry = await getCreateEntry(ctx);
-  if (!createEntry) {
-    throw new Error('createWorldInfoEntry is unavailable (world-info.js import failed)');
+  const names = ctx.getWorldInfoNames?.() ?? [];
+  const bound = ctx.chatMetadata?.[CHAT_BOOK_METADATA_KEY];
+  if (typeof bound === 'string' && bound && names.includes(bound)) return bound;
+
+  const safeId = String(chatId).replace(/[^a-z0-9 -]/gi, '_').replace(/_{2,}/g, '_').slice(0, 48);
+  const name = `Story Lore - ${safeId}`;
+  if (!names.includes(name)) {
+    await ctx.saveWorldInfo(name, { entries: {} }, true);
+    await ctx.updateWorldInfoList();
   }
-  const owned = settings.ownership[bookName] ?? (settings.ownership[bookName] = {});
-  let added = 0;
-  for (const g of gen) {
-    const entry = createEntry(bookName, data);
-    if (!entry) continue;
-    Object.assign(entry, entryFieldsFor(g));
-    entry.addMemo = true; // show the title/comment in the WI editor
-    owned[String(entry.uid)] = hashContent(g.content);
-    added++;
-  }
-  return added;
+  ctx.chatMetadata[CHAT_BOOK_METADATA_KEY] = name;
+  await ctx.saveMetadata();
+  return name;
 }
 
 /** Content-only view of a book's entries, for regeneration planning. */
@@ -108,7 +98,49 @@ function contentMap(entries: Record<string, STWorldInfoEntry>): Record<string, {
   return out;
 }
 
-/** First-time fill of a (typically empty) universe book. Returns entries added. */
+/**
+ * Apply a fresh set of generated entries to a book while preserving user work (ADR-0004):
+ * snapshot for recovery, then replace only plugin-owned, unchanged entries — user additions
+ * and in-place edits are left intact. Shared by the canon and story paths. Returns entries added.
+ */
+async function applyGeneratedEntries(
+  ctx: SillyTavernContext,
+  settings: Settings,
+  bookName: string,
+  gen: GeneratedEntry[],
+): Promise<number> {
+  const createEntry = await getCreateEntry(ctx);
+  if (!createEntry) {
+    throw new Error('createWorldInfoEntry is unavailable (world-info.js import failed)');
+  }
+
+  const data = (await ctx.loadWorldInfo(bookName)) ?? { entries: {} };
+  settings.backups[bookName] = { data: structuredClone(data), at: Date.now() };
+
+  const owned = settings.ownership[bookName] ?? {};
+  const plan = planRegeneration(owned, contentMap(data.entries));
+  for (const uid of plan.removableUids) delete data.entries[uid];
+
+  const nextOwned: Record<string, string> = {};
+  let added = 0;
+  for (const g of gen) {
+    const entry = createEntry(bookName, data);
+    if (!entry) continue;
+    Object.assign(entry, entryFieldsFor(g));
+    entry.addMemo = true; // show the title/comment in the WI editor
+    nextOwned[String(entry.uid)] = hashContent(g.content);
+    added++;
+  }
+  // Released (user-edited) and vanished entries drop out of ownership; user entries were never in it.
+  settings.ownership[bookName] = nextOwned;
+
+  await ctx.saveWorldInfo(bookName, data);
+  ctx.reloadWorldInfoEditor?.(bookName);
+  persistSettings(ctx);
+  return added;
+}
+
+/** First-time fill of a universe book from chat-blind franchise canon. Returns entries added. */
 export async function buildBook(
   ctx: SillyTavernContext,
   settings: Settings,
@@ -117,18 +149,11 @@ export async function buildBook(
   depth: number,
 ): Promise<number> {
   const gen = await generateUniverseEntries(ctx, franchiseDisplay, depth);
-  await backupBook(ctx, settings, bookName);
-  const data = (await ctx.loadWorldInfo(bookName)) ?? { entries: {} };
-  const added = await appendEntries(ctx, settings, bookName, data, gen);
-  await ctx.saveWorldInfo(bookName, data);
-  ctx.reloadWorldInfoEditor?.(bookName);
-  persistSettings(ctx);
-  return added;
+  return applyGeneratedEntries(ctx, settings, bookName, gen);
 }
 
 /**
- * Rewrite a book while preserving user work (ADR-0004): only plugin-owned,
- * unchanged entries are replaced; user-added and user-edited entries stay.
+ * Rewrite a universe book from fresh canon while preserving user work (ADR-0004).
  * Returns the number of freshly generated entries.
  */
 export async function regenerateBook(
@@ -138,37 +163,25 @@ export async function regenerateBook(
   franchiseDisplay: string,
   depth: number,
 ): Promise<number> {
-  const createEntry = await getCreateEntry(ctx);
-  if (!createEntry) {
-    throw new Error('createWorldInfoEntry is unavailable (world-info.js import failed)');
-  }
-  const data = await ctx.loadWorldInfo(bookName);
-  if (!data) throw new Error(`Universe book not found: ${bookName}`);
-
-  await backupBook(ctx, settings, bookName);
-
-  const owned = settings.ownership[bookName] ?? {};
-  const plan = planRegeneration(owned, contentMap(data.entries));
-
-  // Remove only owned, unchanged entries; user additions/edits are left untouched.
-  for (const uid of plan.removableUids) delete data.entries[uid];
-
   const gen = await generateUniverseEntries(ctx, franchiseDisplay, depth);
-  const nextOwned: Record<string, string> = {};
-  for (const g of gen) {
-    const entry = createEntry(bookName, data);
-    if (!entry) continue;
-    Object.assign(entry, entryFieldsFor(g));
-    entry.addMemo = true;
-    nextOwned[String(entry.uid)] = hashContent(g.content);
-  }
-  // Released (user-edited) and vanished entries drop out of ownership; user entries were never in it.
-  settings.ownership[bookName] = nextOwned;
+  return applyGeneratedEntries(ctx, settings, bookName, gen);
+}
 
-  await ctx.saveWorldInfo(bookName, data);
-  ctx.reloadWorldInfoEditor?.(bookName);
-  persistSettings(ctx);
-  return gen.length;
+/**
+ * Update the per-chat story book from the ongoing roleplay (ADR-0008). Uses chat-aware
+ * generation. An empty result is a no-op — nothing notable happened, so we never wipe an
+ * existing story book. Returns entries written (0 if unchanged).
+ */
+export async function updateStoryLore(
+  ctx: SillyTavernContext,
+  settings: Settings,
+  chatBookName: string,
+  franchiseDisplay: string,
+  softCap: number,
+): Promise<number> {
+  const gen = await generateStoryEntries(ctx, franchiseDisplay, softCap);
+  if (gen.length === 0) return 0; // nothing to record; leave the book as-is
+  return applyGeneratedEntries(ctx, settings, chatBookName, gen);
 }
 
 /** Restore the last snapshot of a book, if one exists. */
