@@ -3,25 +3,28 @@ import { universeBookName } from './books';
 import { detectFranchise } from './detection';
 import { loadSettings, persistSettings, type Settings } from './settings';
 import { confirmVerdict, renderSettingsPanel, type ConfirmResult, type PanelHandlers } from './ui';
-import {
-  buildBook,
-  ensureBook,
-  linkAuxBook,
-  regenerateBook,
-  restoreBackup,
-} from './worldbook';
+import { buildBook, ensureBook, linkAuxBook, regenerateBook, restoreBackup } from './worldbook';
 import type { Verdict } from './types';
 
 const LOG = '[worldbook-sync]';
 
 let busy = false;
 
+/**
+ * Always read a FRESH context. getContext() returns a snapshot (characterId/groupId
+ * are copied at call time — st-context.js), so a captured context goes stale the moment
+ * the user changes chats. Never cache the returned object across events.
+ */
+function getCtx(): SillyTavernContext {
+  return SillyTavern.getContext();
+}
+
 /** The solo character currently being played, or null (no selection / group chat). */
 function activeCharacter(ctx: SillyTavernContext): STCharacter | null {
   if (ctx.groupId) return null; // group chats are not part of the v1 auto flow
   const id = ctx.characterId;
   if (id === undefined || id === null) return null;
-  return ctx.characters[id] ?? null;
+  return ctx.characters[id as number] ?? null;
 }
 
 function resultToVerdict(result: ConfirmResult): Verdict | null {
@@ -105,8 +108,9 @@ async function processCharacter(
   }
 }
 
-function onChatChanged(ctx: SillyTavernContext, settings: Settings): void {
+function onChatChanged(settings: Settings): void {
   if (!settings.enabled || busy) return;
+  const ctx = getCtx();
   const character = activeCharacter(ctx);
   if (!character) return;
   busy = true;
@@ -137,35 +141,42 @@ async function runAction(label: string, fn: () => Promise<void>): Promise<void> 
   }
 }
 
-function buildHandlers(ctx: SillyTavernContext, settings: Settings): PanelHandlers {
-  const requireCharacter = (): STCharacter | null => {
+function buildHandlers(settings: Settings): PanelHandlers {
+  const requireCharacter = (): { ctx: SillyTavernContext; character: STCharacter } | null => {
+    const ctx = getCtx();
     const character = activeCharacter(ctx);
     if (!character) {
       toastr.warning('Open a single character first (group chats not supported yet).', 'Worldbook Sync');
+      return null;
     }
-    return character;
+    return { ctx, character };
   };
 
   return {
     onEnabledChange: (value) => {
       settings.enabled = value;
-      persistSettings(ctx);
+      persistSettings(getCtx());
     },
     onAutoBuildChange: (value) => {
       settings.autoBuild = value;
-      persistSettings(ctx);
+      persistSettings(getCtx());
     },
     onDepthChange: (value) => {
       settings.bookDepth = value;
-      persistSettings(ctx);
+      persistSettings(getCtx());
     },
     onRedetect: () => {
-      const character = requireCharacter();
-      if (character) void runAction('Re-detect', () => processCharacter(ctx, settings, character, true));
+      const active = requireCharacter();
+      if (active) {
+        void runAction('Re-detect', () =>
+          processCharacter(active.ctx, settings, active.character, true),
+        );
+      }
     },
     onBuildOrRegenerate: () => {
-      const character = requireCharacter();
-      if (!character) return;
+      const active = requireCharacter();
+      if (!active) return;
+      const { ctx, character } = active;
       void runAction('Build/regenerate', async () => {
         const verdict = await ensureVerdict(ctx, settings, character);
         if (!verdict || verdict.kind !== 'franchise') {
@@ -190,8 +201,9 @@ function buildHandlers(ctx: SillyTavernContext, settings: Settings): PanelHandle
       });
     },
     onRestore: () => {
-      const character = requireCharacter();
-      if (!character) return;
+      const active = requireCharacter();
+      if (!active) return;
+      const { ctx, character } = active;
       void runAction('Restore', async () => {
         const cached = settings.verdicts[character.avatar]?.verdict;
         if (!cached || cached.kind !== 'franchise') {
@@ -210,23 +222,25 @@ function buildHandlers(ctx: SillyTavernContext, settings: Settings): PanelHandle
 }
 
 function boot(): void {
-  const ctx = SillyTavern.getContext();
+  const ctx = getCtx();
   if (!ctx) {
     console.error(LOG, 'no SillyTavern context; extension not started');
     return;
   }
+  // Settings live in the shared extensionSettings object, so this reference stays valid
+  // across fresh getContext() calls; only the per-call scalars (characterId) go stale.
   const settings = loadSettings(ctx);
   const eventTypes = ctx.eventTypes ?? ctx.event_types ?? {};
 
   const renderPanel = (): void =>
     renderSettingsPanel(
       { enabled: settings.enabled, autoBuild: settings.autoBuild, bookDepth: settings.bookDepth },
-      buildHandlers(ctx, settings),
+      buildHandlers(settings),
     );
 
   renderPanel(); // if the container isn't ready yet, APP_READY re-attempts (both are no-op-safe)
   ctx.eventSource.on(eventTypes.APP_READY ?? 'app_ready', renderPanel);
-  ctx.eventSource.on(eventTypes.CHAT_CHANGED ?? 'chat_id_changed', () => onChatChanged(ctx, settings));
+  ctx.eventSource.on(eventTypes.CHAT_CHANGED ?? 'chat_id_changed', () => onChatChanged(settings));
 
   console.log(LOG, 'loaded');
 }

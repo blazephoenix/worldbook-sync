@@ -506,6 +506,9 @@ async function restoreBackup(ctx, settings, bookName) {
 // src/index.ts
 var LOG = "[worldbook-sync]";
 var busy = false;
+function getCtx() {
+  return SillyTavern.getContext();
+}
 function activeCharacter(ctx) {
   if (ctx.groupId) return null;
   const id = ctx.characterId;
@@ -569,8 +572,9 @@ async function processCharacter(ctx, settings, character, forceRedetect = false)
     );
   }
 }
-function onChatChanged(ctx, settings) {
+function onChatChanged(settings) {
   if (!settings.enabled || busy) return;
+  const ctx = getCtx();
   const character = activeCharacter(ctx);
   if (!character) return;
   busy = true;
@@ -596,34 +600,42 @@ async function runAction(label, fn) {
     busy = false;
   }
 }
-function buildHandlers(ctx, settings) {
+function buildHandlers(settings) {
   const requireCharacter = () => {
+    const ctx = getCtx();
     const character = activeCharacter(ctx);
     if (!character) {
       toastr.warning("Open a single character first (group chats not supported yet).", "Worldbook Sync");
+      return null;
     }
-    return character;
+    return { ctx, character };
   };
   return {
     onEnabledChange: (value) => {
       settings.enabled = value;
-      persistSettings(ctx);
+      persistSettings(getCtx());
     },
     onAutoBuildChange: (value) => {
       settings.autoBuild = value;
-      persistSettings(ctx);
+      persistSettings(getCtx());
     },
     onDepthChange: (value) => {
       settings.bookDepth = value;
-      persistSettings(ctx);
+      persistSettings(getCtx());
     },
     onRedetect: () => {
-      const character = requireCharacter();
-      if (character) void runAction("Re-detect", () => processCharacter(ctx, settings, character, true));
+      const active = requireCharacter();
+      if (active) {
+        void runAction(
+          "Re-detect",
+          () => processCharacter(active.ctx, settings, active.character, true)
+        );
+      }
     },
     onBuildOrRegenerate: () => {
-      const character = requireCharacter();
-      if (!character) return;
+      const active = requireCharacter();
+      if (!active) return;
+      const { ctx, character } = active;
       void runAction("Build/regenerate", async () => {
         const verdict = await ensureVerdict(ctx, settings, character);
         if (!verdict || verdict.kind !== "franchise") {
@@ -648,8 +660,9 @@ function buildHandlers(ctx, settings) {
       });
     },
     onRestore: () => {
-      const character = requireCharacter();
-      if (!character) return;
+      const active = requireCharacter();
+      if (!active) return;
+      const { ctx, character } = active;
       void runAction("Restore", async () => {
         const cached = settings.verdicts[character.avatar]?.verdict;
         if (!cached || cached.kind !== "franchise") {
@@ -667,7 +680,7 @@ function buildHandlers(ctx, settings) {
   };
 }
 function boot() {
-  const ctx = SillyTavern.getContext();
+  const ctx = getCtx();
   if (!ctx) {
     console.error(LOG, "no SillyTavern context; extension not started");
     return;
@@ -676,11 +689,11 @@ function boot() {
   const eventTypes = ctx.eventTypes ?? ctx.event_types ?? {};
   const renderPanel = () => renderSettingsPanel(
     { enabled: settings.enabled, autoBuild: settings.autoBuild, bookDepth: settings.bookDepth },
-    buildHandlers(ctx, settings)
+    buildHandlers(settings)
   );
   renderPanel();
   ctx.eventSource.on(eventTypes.APP_READY ?? "app_ready", renderPanel);
-  ctx.eventSource.on(eventTypes.CHAT_CHANGED ?? "chat_id_changed", () => onChatChanged(ctx, settings));
+  ctx.eventSource.on(eventTypes.CHAT_CHANGED ?? "chat_id_changed", () => onChatChanged(settings));
   console.log(LOG, "loaded");
 }
 boot();
