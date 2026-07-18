@@ -1,0 +1,23 @@
+{
+  "name": "worldbook-sync",
+  "version": "0.1.0",
+  "description": "SillyTavern extension that detects a character's franchise and maintains a shared universe worldbook.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
+  },
+  "devDependencies": {
+    "@types/jquery": "^3.5.31",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  },
+  "packageManager": "pnpm@11.0.8"
+}

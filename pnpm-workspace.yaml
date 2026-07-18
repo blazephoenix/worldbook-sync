@@ -1,0 +1,5 @@
+# pnpm 11 reads build-script approvals from here. esbuild's postinstall is approved
+# so `pnpm install` exits clean; the binary works regardless, but pnpm treats an
+# ignored build as a fatal error before running any `pnpm run` script.
+allowBuilds:
+  esbuild: true

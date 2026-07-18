@@ -1,0 +1,9 @@
+{
+  "display_name": "Worldbook Sync",
+  "loading_order": 100,
+  "js": "index.js",
+  "css": "",
+  "author": "blazephoenix",
+  "version": "0.1.0",
+  "auto_update": true
+}
