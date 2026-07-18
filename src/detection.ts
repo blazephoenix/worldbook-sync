@@ -87,8 +87,9 @@ export function buildDetectionPrompt(input: DetectionInput): string {
 /**
  * Detect a character's franchise via the user's configured LLM connection.
  *
- * Glue: exercises the host `generateQuietPrompt` and cannot be unit-tested without a
- * running SillyTavern. Retries once on a parse failure before giving up.
+ * Glue: uses chat-blind `generateRaw` so detection is not influenced by the ongoing
+ * roleplay — it sees only the card fields we put in the prompt. Retries once on a parse
+ * failure before giving up.
  */
 export async function detectFranchise(
   ctx: SillyTavernContext,
@@ -105,8 +106,7 @@ export async function detectFranchise(
   const maxAttempts = 2;
   let lastError: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // quietToLoud=false (background), skipWIAN=true (don't feed WI/author's note into detection).
-    const raw = await ctx.generateQuietPrompt(prompt, false, true);
+    const raw = await ctx.generateRaw({ prompt });
     try {
       return parseDetectionResponse(raw);
     } catch (error) {

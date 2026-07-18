@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseGenerationResponse, buildGenerationPrompt } from './generation';
+import { parseGenerationResponse, buildGenerationPrompt, buildStoryPrompt } from './generation';
 
 describe('parseGenerationResponse', () => {
   it('parses a clean JSON array of entries', () => {
@@ -54,5 +54,21 @@ describe('buildGenerationPrompt', () => {
     expect(p).toContain('The Witcher');
     expect(p).toContain('12');
     expect(p.toLowerCase()).toContain('json');
+  });
+});
+
+describe('buildStoryPrompt', () => {
+  it('references the ongoing story, the franchise, and asks for JSON', () => {
+    const p = buildStoryPrompt('The Witcher', 15);
+    expect(p).toContain('The Witcher');
+    expect(p.toLowerCase()).toContain('json');
+    // It must anchor on the actual roleplay, not canon.
+    expect(p.toLowerCase()).toMatch(/story|conversation|roleplay|happened/);
+  });
+
+  it('reuses the same entry shape, so parseGenerationResponse can read its output', () => {
+    // A response produced under this prompt parses with the shared parser.
+    const raw = '[{"title":"Arasaka Tower destroyed","keys":["Arasaka"],"content":"Razed by the player."}]';
+    expect(parseGenerationResponse(raw)).toHaveLength(1);
   });
 });

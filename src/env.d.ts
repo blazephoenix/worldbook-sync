@@ -80,14 +80,30 @@ interface SillyTavernContext {
   getWorldInfoNames(): string[];
   /** Present in some builds; not guaranteed on the stable surface — we fall back to an import. */
   createWorldInfoEntry?(name: string, data: STWorldInfoData): STWorldInfoEntry | undefined;
-  generateQuietPrompt(
-    quietPrompt: string,
-    quietToLoud?: boolean,
-    skipWIAN?: boolean,
-    quietImage?: string,
-    quietName?: string,
-    responseLength?: number,
-  ): Promise<string>;
+  /** Background generation that DOES see the current chat context (object param). */
+  generateQuietPrompt(options: {
+    quietPrompt: string;
+    quietToLoud?: boolean;
+    skipWIAN?: boolean;
+    responseLength?: number;
+    jsonSchema?: unknown;
+  }): Promise<string>;
+  /** Generation WITHOUT chat context — chat-blind (object param). */
+  generateRaw(options: {
+    prompt: string;
+    systemPrompt?: string;
+    responseLength?: number;
+    jsonSchema?: unknown;
+  }): Promise<string>;
+  executeSlashCommandsWithOptions(
+    text: string,
+    options?: Record<string, unknown>,
+  ): Promise<{ pipe?: string } & Record<string, unknown>>;
+  /** Per-chat metadata; the chat-bound world name lives at chatMetadata['world_info']. */
+  chatMetadata: Record<string, unknown>;
+  saveMetadata(): Promise<void>;
+  getCurrentChatId?: () => string | null | undefined;
+  chatId?: string;
   callGenericPopup(
     content: unknown,
     type: number,

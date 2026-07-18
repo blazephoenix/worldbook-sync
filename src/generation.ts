@@ -79,28 +79,92 @@ export function buildGenerationPrompt(franchiseDisplay: string, targetCount: num
 }
 
 /**
- * Generate focused-core universe entries via the user's LLM connection.
- * Glue: exercises the host `generateQuietPrompt`. Retries once, requires a non-empty result.
+ * Build the story-aware prompt for the per-chat book (ADR-0008). Pure — unit-testable.
+ * Relies on the ongoing chat being in the model's context (via generateQuietPrompt), so it
+ * instructs the model to read the story rather than restating franchise canon.
+ */
+export function buildStoryPrompt(franchiseDisplay: string, softCap: number): string {
+  return [
+    `Based on the ROLEPLAY CONVERSATION SO FAR (which you can see above), capture how this`,
+    `playthrough of the "${franchiseDisplay}" universe has diverged from its canon.`,
+    '',
+    'Record two kinds of things:',
+    '- World-state changes & events: durable things that happened — places/factions/people whose',
+    '  status shifted, things destroyed or created, alliances or conflicts the player caused.',
+    '- The player character\'s standing: how NPCs, factions, and the world now regard them —',
+    '  reputation, bonds, and grudges earned in play.',
+    '',
+    'Rules:',
+    '- Only durable developments, not passing scene detail or dialogue.',
+    '- Do NOT restate established franchise canon — only what THIS story changed or established.',
+    "- If nothing notable has happened yet, return an empty array [].",
+    `- Keep it focused: up to about ${softCap} entries.`,
+    '',
+    'For each entry:',
+    '- "title": a short human label.',
+    '- "keys": trigger keywords (proper nouns, synonyms, plurals) people would actually type.',
+    '- "content": 1–3 concise sentences of prose.',
+    '',
+    'Respond with ONLY a JSON array — no prose, no code fence:',
+    '[{"title": "...", "keys": ["...", "..."], "content": "..."}]',
+  ].join('\n');
+}
+
+/**
+ * Generate focused-core FRANCHISE-CANON entries. Glue: uses chat-blind `generateRaw` so the
+ * canon book is never influenced by the ongoing roleplay. Retries once; requires a non-empty result.
  */
 export async function generateUniverseEntries(
   ctx: SillyTavernContext,
   franchiseDisplay: string,
   targetCount: number,
 ): Promise<GeneratedEntry[]> {
-  const prompt = buildGenerationPrompt(franchiseDisplay, targetCount);
+  return runGeneration(
+    () => ctx.generateRaw({ prompt: buildGenerationPrompt(franchiseDisplay, targetCount), responseLength: 2048 }),
+    'generateUniverseEntries',
+    true,
+  );
+}
+
+/**
+ * Generate story-derived entries for the per-chat book. Glue: uses `generateQuietPrompt` so the
+ * model DOES see the current chat. An empty result is valid here (nothing notable happened yet).
+ */
+export async function generateStoryEntries(
+  ctx: SillyTavernContext,
+  franchiseDisplay: string,
+  softCap: number,
+): Promise<GeneratedEntry[]> {
+  return runGeneration(
+    () => ctx.generateQuietPrompt({ quietPrompt: buildStoryPrompt(franchiseDisplay, softCap), skipWIAN: true, responseLength: 2048 }),
+    'generateStoryEntries',
+    false,
+  );
+}
+
+/** Shared retry/parse loop for a generation call. `requireNonEmpty` distinguishes canon from story. */
+async function runGeneration(
+  call: () => Promise<string>,
+  label: string,
+  requireNonEmpty: boolean,
+): Promise<GeneratedEntry[]> {
   const maxAttempts = 2;
   let lastError: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const raw = await ctx.generateQuietPrompt(prompt, false, true, undefined, undefined, 2048);
+    let raw: string;
+    try {
+      raw = await call();
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
     try {
       const entries = parseGenerationResponse(raw);
-      if (entries.length > 0) return entries;
+      if (entries.length > 0 || !requireNonEmpty) return entries;
       lastError = new Error('generation returned an empty entry list');
     } catch (error) {
       lastError = error;
     }
   }
-  throw new Error(
-    `generateUniverseEntries: no usable entries after ${maxAttempts} attempts (${String(lastError)})`,
-  );
+  throw new Error(`${label}: no usable result after ${maxAttempts} attempts (${String(lastError)})`);
 }
