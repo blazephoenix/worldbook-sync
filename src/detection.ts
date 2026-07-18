@@ -1,4 +1,5 @@
 import { canonicalizeFranchise } from './canonical';
+import { generateChatBlind } from './llm';
 import type { Verdict } from './types';
 
 /** Franchise-name values that actually mean "no franchise". */
@@ -6,6 +7,9 @@ const NON_FRANCHISE_SENTINELS = new Set(['', 'none', 'null', 'n/a', 'na', 'unkno
 
 /** Pull the outermost `{…}` JSON object out of a model response, tolerating fences/prose. */
 function extractJsonObject(raw: string): unknown {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new Error('parseDetectionResponse: empty or non-string response');
+  }
   const withoutFences = raw.replace(/```(?:json)?/gi, '');
   const start = withoutFences.indexOf('{');
   const end = withoutFences.lastIndexOf('}');
@@ -106,7 +110,7 @@ export async function detectFranchise(
   const maxAttempts = 2;
   let lastError: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const raw = await ctx.generateRaw({ prompt });
+    const raw = await generateChatBlind(ctx, prompt);
     try {
       return parseDetectionResponse(raw);
     } catch (error) {

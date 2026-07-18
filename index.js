@@ -11,9 +11,41 @@ function universeBookName(display) {
   return `${BOOK_PREFIX}${safe}`;
 }
 
+// src/llm.ts
+async function firstUsableString(attempts) {
+  let lastError;
+  for (const attempt of attempts) {
+    try {
+      const result = await attempt();
+      if (typeof result === "string" && result.trim().length > 0) return result;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return "";
+}
+function generateChatBlind(ctx, prompt, responseLength = 2048) {
+  const raw = ctx.generateRaw;
+  return firstUsableString([
+    () => ctx.generateRaw({ prompt, responseLength }),
+    () => raw(prompt)
+  ]);
+}
+function generateChatAware(ctx, prompt, responseLength = 2048) {
+  const quiet = ctx.generateQuietPrompt;
+  return firstUsableString([
+    () => ctx.generateQuietPrompt({ quietPrompt: prompt, skipWIAN: true, responseLength }),
+    () => quiet(prompt, false, true)
+  ]);
+}
+
 // src/detection.ts
 var NON_FRANCHISE_SENTINELS = /* @__PURE__ */ new Set(["", "none", "null", "n/a", "na", "unknown", "original"]);
 function extractJsonObject(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error("parseDetectionResponse: empty or non-string response");
+  }
   const withoutFences = raw.replace(/```(?:json)?/gi, "");
   const start = withoutFences.indexOf("{");
   const end = withoutFences.lastIndexOf("}");
@@ -78,7 +110,7 @@ async function detectFranchise(ctx, character) {
   const maxAttempts = 2;
   let lastError;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const raw = await ctx.generateRaw({ prompt });
+    const raw = await generateChatBlind(ctx, prompt);
     try {
       return parseDetectionResponse(raw);
     } catch (error) {
@@ -277,6 +309,9 @@ function coerceEntry(x) {
   return { title, keys, content };
 }
 function extractEntriesArray(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error("parseGenerationResponse: empty or non-string response");
+  }
   const stripped = raw.replace(/```(?:json)?/gi, "").trim();
   const lb = stripped.indexOf("[");
   const rb = stripped.lastIndexOf("]");
@@ -345,14 +380,14 @@ function buildStoryPrompt(franchiseDisplay, softCap) {
 }
 async function generateUniverseEntries(ctx, franchiseDisplay, targetCount) {
   return runGeneration(
-    () => ctx.generateRaw({ prompt: buildGenerationPrompt(franchiseDisplay, targetCount), responseLength: 2048 }),
+    () => generateChatBlind(ctx, buildGenerationPrompt(franchiseDisplay, targetCount)),
     "generateUniverseEntries",
     true
   );
 }
 async function generateStoryEntries(ctx, franchiseDisplay, softCap) {
   return runGeneration(
-    () => ctx.generateQuietPrompt({ quietPrompt: buildStoryPrompt(franchiseDisplay, softCap), skipWIAN: true, responseLength: 2048 }),
+    () => generateChatAware(ctx, buildStoryPrompt(franchiseDisplay, softCap)),
     "generateStoryEntries",
     false
   );
